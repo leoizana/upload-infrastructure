@@ -231,18 +231,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['fichier'])) {
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
+
+        .header-nav {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 25px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .header-nav a {
+            text-decoration: none;
+            color: #555;
+            font-weight: bold;
+            padding: 8px 15px;
+            border-radius: 5px;
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        .header-nav a.active, .header-nav a:hover {
+            background-color: #667eea;
+            color: white;
+            text-decoration: none;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📤 Upload de fichier</h1>
+        <nav class="header-nav">
+            <a href="index.php" class="active">📤 Upload</a>
+            <a href="liste.php">📁 Liste des fichiers</a>
+        </nav>
+        <h1>Upload de Fichier</h1>
         
         <?php if (isset($message)): ?>
             <div class="message <?php echo $message_type; ?>">
                 <?php echo $message; ?>
             </div>
         <?php endif; ?>
-        
+
         <form action="" method="post" enctype="multipart/form-data">
             <div class="form-group">
                 <label for="fichier">Nom de votre fichier :</label>
