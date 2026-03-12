@@ -1,14 +1,27 @@
 <?php
+
+// --- Configuration de la base de données MySQL ---
+// Dans une application réelle, ces informations seraient dans un fichier de configuration non versionné.
+define('DB_HOST', getenv('BDD_HOST') ?: 'localhost');
+define('DB_NAME', getenv('BDD_NAME') ?: getenv('DB_NAME')); // Remplacez par le nom de votre base de données
+define('DB_USER', getenv('BDD_USER') ?: getenv('DB_USER'));      // Remplacez par votre nom d'utilisateur
+define('DB_PASS', getenv('BDD_PASS') ?: getenv('DB_PASS'));        // Remplacez par votre mot de passe
+define('DB_CHARSET', 'utf8mb4');
+// ---------------------------------------------
+
 /**
- * Connexion à la bdd (fichier sqlite)
+ * Connexion à la bdd (MySQL)
  * @return PDO
  */
 function initDatabase() {
-    // Dans une application plus grande, cette fonction serait dans un fichier partagé
+    $dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET;
+    $options = [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false,
+    ];
     try {
-        $db = new PDO('sqlite:bdd.sqlite');
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        return $db;
+        return new PDO($dsn, DB_USER, DB_PASS, $options);
     } catch (PDOException $e) {
         die("Erreur de connexion à la base de données : " . $e->getMessage());
     }

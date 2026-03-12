@@ -1,22 +1,43 @@
 <?php
+
+// --- Configuration de la base de données MySQL ---
+// Dans une application réelle, ces informations seraient dans un fichier de configuration non versionné.
+define('DB_HOST', 'localhost');
+define('DB_NAME', 'upload_db'); // Remplacez par le nom de votre base de données
+define('DB_USER', 'root');      // Remplacez par votre nom d'utilisateur
+define('DB_PASS', '');        // Remplacez par votre mot de passe
+define('DB_CHARSET', 'utf8mb4');
+// ---------------------------------------------
+
 /**
- * Connexion à la bdd (fichier sqlite)
+ * Connexion à la bdd (MySQL) et création de la table si elle n'existe pas.
  * @return PDO
  */
 function initDatabase() {
-    $db = new PDO('sqlite:bdd.sqlite');
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    $db->exec("CREATE TABLE IF NOT EXISTS fichiers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nom_fichier TEXT NOT NULL,
-        nom_original TEXT NOT NULL,
-        url_fichier TEXT NOT NULL,
-        taille INTEGER NOT NULL,
-        type_mime TEXT,
-        date_upload DATETIME DEFAULT CURRENT_TIMESTAMP
-    )");
-    
+    $dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET;
+    $options = [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false,
+    ];
+    try {
+        $db = new PDO($dsn, DB_USER, DB_PASS, $options);
+    } catch (\PDOException $e) {
+        // En production, il serait préférable de logger l'erreur plutôt que de l'afficher.
+        die("Erreur de connexion à la base de données : " . $e->getMessage());
+    }
+
+    // Le script de création de table est maintenant adapté pour MySQL.
+    $db->exec("CREATE TABLE IF NOT EXISTS `fichiers` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `nom_fichier` VARCHAR(255) NOT NULL,
+        `nom_original` VARCHAR(255) NOT NULL,
+        `url_fichier` VARCHAR(255) NOT NULL,
+        `taille` BIGINT NOT NULL,
+        `type_mime` VARCHAR(100),
+        `date_upload` DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
     return $db;
 }
 
