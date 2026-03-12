@@ -1,29 +1,114 @@
 <?php
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['fichier'])) {
-    $dossier_upload = 'uploads/';
+/**
+ * Connexion à la bdd (fichier sqlite)
+ * @return PDO
+ */
+function initDatabase() {
+    $db = new PDO('sqlite:bdd.sqlite');
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    // Créer le dossier s'il n'existe pas
-    if (!is_dir($dossier_upload)) {
-        mkdir($dossier_upload, 0777, true);
-    }
+    $db->exec("CREATE TABLE IF NOT EXISTS fichiers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nom_fichier TEXT NOT NULL,
+        nom_original TEXT NOT NULL,
+        url_fichier TEXT NOT NULL,
+        taille INTEGER NOT NULL,
+        type_mime TEXT,
+        date_upload DATETIME DEFAULT CURRENT_TIMESTAMP
+    )");
     
-    $fichier = $_FILES['fichier'];
-    $nom_fichier = basename($fichier['name']);
-    $chemin_destination = $dossier_upload . $nom_fichier;
-    
-    if ($fichier['error'] === 0) {
-        if (move_uploaded_file($fichier['tmp_name'], $chemin_destination)) {
-            $message = "✓ Fichier uploadé avec succès : " . htmlspecialchars($nom_fichier);
-            $message_type = "success";
-        } else {
-            $message = "✗ Erreur lors de l'upload du fichier.";
-            $message_type = "error";
-        }
-    } else {
-        $message = "✗ Erreur : " . $fichier['error'];
-        $message_type = "error";
+    return $db;
+}
+
+/**
+ * Créer le dossier d'upload s'il n'existe pas
+ * @param mixed $dossier
+ * @return void
+ */
+function creerDossierUpload($dossier) {
+    if (!is_dir($dossier)) {
+        mkdir($dossier, 0777, true);
     }
 }
+
+/**
+ * Générer un nom de fichier unique pour éviter les conflits
+ * @param mixed $nom_original
+ * @return string
+ */
+function genererNomFichierUnique($nom_original) {
+    $extension = pathinfo($nom_original, PATHINFO_EXTENSION);
+    $nom_sans_ext = pathinfo($nom_original, PATHINFO_FILENAME);
+    return $nom_sans_ext . '_' . time() . '.' . $extension;
+}
+
+/**
+ * Enregistrer les informations du fichier dans la base de données
+ * @param mixed $db
+ * @param mixed $nom_fichier
+ * @param mixed $nom_original
+ * @param mixed $url_fichier
+ * @param mixed $taille
+ * @param mixed $type_mime
+ */
+function enregistrerFichierBDD($db, $nom_fichier, $nom_original, $url_fichier, $taille, $type_mime) {
+    $stmt = $db->prepare("INSERT INTO fichiers (nom_fichier, nom_original, url_fichier, taille, type_mime) 
+                          VALUES (:nom_fichier, :nom_original, :url_fichier, :taille, :type_mime)");
+    return $stmt->execute([
+        ':nom_fichier' => $nom_fichier,
+        ':nom_original' => $nom_original,
+        ':url_fichier' => $url_fichier,
+        ':taille' => $taille,
+        ':type_mime' => $type_mime
+    ]);
+}
+
+/**
+ * Traiter l'upload du fichier
+ * @param mixed $db
+ * @param mixed $fichier
+ * @param mixed $dossier_upload
+ * @return array{message: string, success: bool}
+ */
+function traiterUpload($db, $fichier, $dossier_upload, $name) {
+    if ($fichier['error'] !== 0) {
+        return ['success' => false, 'message' => "✗ Erreur : " . $fichier['error']];
+    }
+    
+    $nom_original = basename($fichier['name']);
+    $extension = pathinfo($nom_original, PATHINFO_EXTENSION);
+    $name = trim($name);
+    
+    if (!empty($name)) {
+        if (!empty($extension) && pathinfo($name, PATHINFO_EXTENSION) !== $extension) {
+            $nom_fichier = $name . '.' . $extension;
+        } else {
+            $nom_fichier = $name;
+        }
+    } else {
+        $nom_fichier = genererNomFichierUnique($nom_original);
+    }
+    $chemin_destination = $dossier_upload . $nom_fichier;
+    
+    if (!move_uploaded_file($fichier['tmp_name'], $chemin_destination)) {
+        return ['success' => false, 'message' => "✗ Erreur lors de l'upload du fichier."];
+    }
+    
+    enregistrerFichierBDD($db, $nom_fichier, $nom_original, $chemin_destination, $fichier['size'], $fichier['type']);
+    
+    return ['success' => true, 'message' => "✓ Fichier uploadé avec succès : " . htmlspecialchars($nom_original)];
+}
+
+$db = initDatabase();
+$dossier_upload = 'uploads/';
+creerDossierUpload($dossier_upload);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['fichier'])) {
+    $resultat = traiterUpload($db, $_FILES['fichier'], $dossier_upload, $_POST['name'] ?? '');
+    $message = $resultat['message'];
+    $message_type = $resultat['success'] ? 'success' : 'error';
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -73,6 +158,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['fichier'])) {
             margin-bottom: 10px;
             color: #555;
             font-weight: bold;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #667eea;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #764ba2;
+            box-shadow: 0 0 0 3px rgba(118, 75, 162, 0.1);
         }
         
         input[type="file"] {
@@ -144,6 +244,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['fichier'])) {
         <?php endif; ?>
         
         <form action="" method="post" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="fichier">Nom de votre fichier :</label>
+                <input type="text" name="name" id="name" required>
+            </div>
             <div class="form-group">
                 <label for="fichier">Choisissez un fichier à envoyer :</label>
                 <input type="file" name="fichier" id="fichier" required>
