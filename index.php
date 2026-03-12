@@ -1,12 +1,23 @@
 <?php
 
+require_once 'vendor/autoload.php';
+
+use MicrosoftAzure\Storage\Blob\BlobRestProxy;
+use MicrosoftAzure\Storage\Common\Exceptions\ServiceException;
+
 // --- Configuration de la base de données MySQL ---
 // Dans une application réelle, ces informations seraient dans un fichier de configuration non versionné.
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'upload_db'); // Remplacez par le nom de votre base de données
-define('DB_USER', 'root');      // Remplacez par votre nom d'utilisateur
-define('DB_PASS', '');        // Remplacez par votre mot de passe
+define('DB_HOST', getenv('BDD_HOST') ?: 'localhost');
+define('DB_NAME', getenv('BDD_NAME') ?: getenv('DB_NAME')); // Remplacez par le nom de votre base de données
+define('DB_USER', getenv('BDD_USER') ?: getenv('DB_USER'));      // Remplacez par votre nom d'utilisateur
+define('DB_PASS', getenv('BDD_PASS') ?: getenv('DB_PASS'));        // Remplacez par votre mot de passe
 define('DB_CHARSET', 'utf8mb4');
+define('AZURE_CONNECTION_STRING', getenv('AZURE_CONNECTION_STRING'));
+// Le nom du compte et la clé sont nécessaires pour générer les liens SAS dans liste.php
+define('AZURE_ACCOUNT_NAME', getenv('AZURE_ACCOUNT_NAME'));
+define('AZURE_ACCOUNT_KEY', getenv('AZURE_ACCOUNT_KEY'));
+define('AZURE_CONTAINER_NAME', getenv('AZURE_CONTAINER_NAME') ?: 'uploads');
+
 // ---------------------------------------------
 
 /**
@@ -32,7 +43,7 @@ function initDatabase() {
         `id` INT AUTO_INCREMENT PRIMARY KEY,
         `nom_fichier` VARCHAR(255) NOT NULL,
         `nom_original` VARCHAR(255) NOT NULL,
-        `url_fichier` VARCHAR(255) NOT NULL,
+        `url_fichier` VARCHAR(255) NULL,
         `taille` BIGINT NOT NULL,
         `type_mime` VARCHAR(100),
         `date_upload` DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -40,16 +51,33 @@ function initDatabase() {
 
     return $db;
 }
+// Note : Si votre table 'fichiers' existe déjà, vous devrez peut-être exécuter cette commande SQL manuellement pour autoriser les URL nulles : ALTER TABLE fichiers MODIFY url_fichier VARCHAR(255) NULL;
 
 /**
- * Créer le dossier d'upload s'il n'existe pas
- * @param mixed $dossier
- * @return void
+ * Initialise le client Azure Blob et crée le conteneur s'il n'existe pas.
+ * @return BlobRestProxy
  */
-function creerDossierUpload($dossier) {
-    if (!is_dir($dossier)) {
-        mkdir($dossier, 0777, true);
+function initAzureBlobService() {
+    if (!AZURE_CONNECTION_STRING) {
+        die("La variable d'environnement AZURE_CONNECTION_STRING n'est pas définie.");
     }
+    $blobClient = BlobRestProxy::createBlobService(AZURE_CONNECTION_STRING);
+
+    // Crée le conteneur s'il n'existe pas.
+    // Par défaut, le conteneur sera privé.
+    try {
+        $blobClient->getContainerProperties(AZURE_CONTAINER_NAME);
+    } catch (ServiceException $e) {
+        // Le conteneur n'existe pas, on le crée.
+        if ($e->getCode() === 404) {
+            $blobClient->createContainer(AZURE_CONTAINER_NAME);
+        } else {
+            // Autre erreur
+            die("Erreur Azure: " . $e->getMessage());
+        }
+    }
+
+    return $blobClient;
 }
 
 /**
@@ -68,17 +96,15 @@ function genererNomFichierUnique($nom_original) {
  * @param mixed $db
  * @param mixed $nom_fichier
  * @param mixed $nom_original
- * @param mixed $url_fichier
  * @param mixed $taille
  * @param mixed $type_mime
  */
-function enregistrerFichierBDD($db, $nom_fichier, $nom_original, $url_fichier, $taille, $type_mime) {
-    $stmt = $db->prepare("INSERT INTO fichiers (nom_fichier, nom_original, url_fichier, taille, type_mime) 
-                          VALUES (:nom_fichier, :nom_original, :url_fichier, :taille, :type_mime)");
+function enregistrerFichierBDD($db, $nom_fichier, $nom_original, $taille, $type_mime) {
+    $stmt = $db->prepare("INSERT INTO fichiers (nom_fichier, nom_original, taille, type_mime) 
+                          VALUES (:nom_fichier, :nom_original, :taille, :type_mime)");
     return $stmt->execute([
         ':nom_fichier' => $nom_fichier,
         ':nom_original' => $nom_original,
-        ':url_fichier' => $url_fichier,
         ':taille' => $taille,
         ':type_mime' => $type_mime
     ]);
@@ -86,12 +112,13 @@ function enregistrerFichierBDD($db, $nom_fichier, $nom_original, $url_fichier, $
 
 /**
  * Traiter l'upload du fichier
- * @param mixed $db
- * @param mixed $fichier
- * @param mixed $dossier_upload
+ * @param PDO $db
+ * @param BlobRestProxy $blobClient
+ * @param array $fichier
+ * @param string $name
  * @return array{message: string, success: bool}
  */
-function traiterUpload($db, $fichier, $dossier_upload, $name) {
+function traiterUpload($db, $blobClient, $fichier, $name) {
     if ($fichier['error'] !== 0) {
         return ['success' => false, 'message' => "✗ Erreur : " . $fichier['error']];
     }
@@ -109,23 +136,29 @@ function traiterUpload($db, $fichier, $dossier_upload, $name) {
     } else {
         $nom_fichier = genererNomFichierUnique($nom_original);
     }
-    $chemin_destination = $dossier_upload . $nom_fichier;
-    
-    if (!move_uploaded_file($fichier['tmp_name'], $chemin_destination)) {
-        return ['success' => false, 'message' => "✗ Erreur lors de l'upload du fichier."];
+
+    $containerName = AZURE_CONTAINER_NAME;
+    $fileContent = fopen($fichier['tmp_name'], "r");
+
+    try {
+        // Upload du blob
+        $blobClient->createBlockBlob($containerName, $nom_fichier, $fileContent);
+    } catch (ServiceException $e) {
+        return ['success' => false, 'message' => "✗ Erreur lors de l'upload vers Azure : " . $e->getMessage()];
     }
+
+    // On n'enregistre plus d'URL, car elle serait inaccessible.
+    enregistrerFichierBDD($db, $nom_fichier, $nom_original, $fichier['size'], $fichier['type']);
     
-    enregistrerFichierBDD($db, $nom_fichier, $nom_original, $chemin_destination, $fichier['size'], $fichier['type']);
-    
-    return ['success' => true, 'message' => "✓ Fichier uploadé avec succès : " . htmlspecialchars($nom_original)];
+    return ['success' => true, 'message' => "✓ Fichier uploadé avec succès sur Azure : " . htmlspecialchars($nom_original)];
 }
 
 $db = initDatabase();
-$dossier_upload = 'uploads/';
-creerDossierUpload($dossier_upload);
+$blobClient = initAzureBlobService();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['fichier'])) {
-    $resultat = traiterUpload($db, $_FILES['fichier'], $dossier_upload, $_POST['name'] ?? '');
+    // On passe le client blob à la fonction de traitement
+    $resultat = traiterUpload($db, $blobClient, $_FILES['fichier'], $_POST['name'] ?? '');
     $message = $resultat['message'];
     $message_type = $resultat['success'] ? 'success' : 'error';
 }

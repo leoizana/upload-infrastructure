@@ -1,5 +1,11 @@
 <?php
 
+require_once 'vendor/autoload.php';
+
+use MicrosoftAzure\Storage\Blob\BlobRestProxy;
+use MicrosoftAzure\Storage\Common\Exceptions\ServiceException;
+use MicrosoftAzure\Storage\Common\SharedAccessSignatureHelper;
+
 // --- Configuration de la base de données MySQL ---
 // Dans une application réelle, ces informations seraient dans un fichier de configuration non versionné.
 define('DB_HOST', getenv('BDD_HOST') ?: 'localhost');
@@ -7,10 +13,18 @@ define('DB_NAME', getenv('BDD_NAME') ?: getenv('DB_NAME')); // Remplacez par le 
 define('DB_USER', getenv('BDD_USER') ?: getenv('DB_USER'));      // Remplacez par votre nom d'utilisateur
 define('DB_PASS', getenv('BDD_PASS') ?: getenv('DB_PASS'));        // Remplacez par votre mot de passe
 define('DB_CHARSET', 'utf8mb4');
+// --- Configuration Azure Blob Storage ---
+define('AZURE_CONNECTION_STRING', getenv('AZURE_CONNECTION_STRING'));
+define('AZURE_ACCOUNT_NAME', getenv('AZURE_ACCOUNT_NAME'));
+define('AZURE_ACCOUNT_KEY', getenv('AZURE_ACCOUNT_KEY'));
+define('AZURE_CONTAINER_NAME', getenv('AZURE_CONTAINER_NAME') ?: 'uploads');
 // ---------------------------------------------
 
 /**
  * Connexion à la bdd (MySQL)
+ * Dans une application plus grande, cette fonction et la suivante
+ * seraient dans un fichier partagé (ex: 'bootstrap.php' ou 'config.php')
+ * pour éviter la duplication de code.
  * @return PDO
  */
 function initDatabase() {
@@ -26,6 +40,55 @@ function initDatabase() {
         die("Erreur de connexion à la base de données : " . $e->getMessage());
     }
 }
+
+/**
+ * Initialise le client Azure Blob.
+ * @return BlobRestProxy|null
+ */
+function initAzureBlobService() {
+    if (!AZURE_CONNECTION_STRING) {
+        // Ne pas 'die' ici pour que la page s'affiche même si Azure n'est pas configuré
+        // On gérera l'erreur plus tard.
+        return null;
+    }
+    try {
+        return BlobRestProxy::createBlobService(AZURE_CONNECTION_STRING);
+    } catch (\Exception $e) {
+        // Gérer l'erreur de connexion sans bloquer la page
+        return null;
+    }
+}
+
+/**
+ * Génère un lien de téléchargement sécurisé (SAS) pour un blob.
+ * @param string $containerName
+ * @param string $blobName
+ * @return string
+ */
+function generateSasLink(string $containerName, string $blobName): string
+{
+    if (!AZURE_ACCOUNT_NAME || !AZURE_ACCOUNT_KEY) {
+        return '#error-sas-config'; // Lien non fonctionnel si la config est manquante
+    }
+
+    $sasHelper = new SharedAccessSignatureHelper(AZURE_ACCOUNT_NAME, AZURE_ACCOUNT_KEY);
+
+    // Le lien sera valide pour 5 minutes
+    $expiry = (new DateTime())->modify('+5 minutes');
+
+    $sasToken = $sasHelper->generateBlobServiceSharedAccessSignatureToken(
+        'b',       // 'b' pour blob
+        $blobName,
+        'r',       // 'r' pour permission de lecture (read)
+        $expiry,
+        (new DateTime())->modify('-5 minutes'), // Heure de début
+        '',        // IP autorisées (vide pour toutes)
+        'https'    // Protocole
+    );
+
+    return sprintf('https://%s.blob.core.windows.net/%s/%s?%s', AZURE_ACCOUNT_NAME, $containerName, $blobName, $sasToken);
+}
+
 
 /**
  * Formate la taille d'un fichier en une chaîne lisible par l'homme.
@@ -46,7 +109,8 @@ function formatBytes($bytes, $precision = 2) {
 } 
 
 $db = initDatabase();
-$stmt = $db->query("SELECT id, nom_fichier, nom_original, url_fichier, taille, type_mime, date_upload FROM fichiers ORDER BY date_upload DESC");
+$blobClient = initAzureBlobService(); // Initialise le client Azure
+$stmt = $db->query("SELECT id, nom_fichier, nom_original, taille, type_mime, date_upload FROM fichiers ORDER BY date_upload DESC");
 $fichiers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 ?>
@@ -190,7 +254,13 @@ $fichiers = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             <td><?php echo htmlspecialchars($fichier['nom_original']); ?></td>
                             <td><?php echo formatBytes($fichier['taille']); ?></td>
                             <td><?php echo (new DateTime($fichier['date_upload']))->format('d/m/Y H:i'); ?></td>
-                            <td><a href="<?php echo htmlspecialchars($fichier['url_fichier']); ?>" download>Télécharger</a></td>
+                            <td>
+                                <?php if ($blobClient): ?>
+                                    <a href="<?php echo generateSasLink(AZURE_CONTAINER_NAME, $fichier['nom_fichier']); ?>" download>Télécharger</a>
+                                <?php else: ?>
+                                    <span>Config Azure manquante</span>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
